@@ -11,7 +11,8 @@ LBR_URL = "https://www.federalreserve.gov/releases/lbr/current/"
 # -------------------------
 # Formatting helpers
 # -------------------------
-def format_assets(mil):
+def format_assets_mil(mil):
+    """Input is millions of dollars. Output as $M/$B/$T."""
     if pd.isna(mil):
         return "N/A"
     if mil >= 1_000_000:
@@ -19,6 +20,10 @@ def format_assets(mil):
     if mil >= 1_000:
         return f"${mil/1_000:.2f}B"
     return f"${mil:,.0f}M"
+
+def mil_to_dollars(mil):
+    """Millions -> dollars"""
+    return mil * 1_000_000
 
 def clean_columns(cols):
     cleaned = []
@@ -48,7 +53,7 @@ def to_number_safe(series: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 # -------------------------
-# Logos
+# Logos (Wikimedia direct file paths)
 # -------------------------
 LOGOS = {
     "JPMORGAN": "JPMorgan Chase logo 2008.svg",
@@ -85,7 +90,7 @@ def short_name(bank):
     return re.sub(r"\s+", " ", str(bank).split("/")[0].strip())[:22]
 
 # -------------------------
-# Load data (robust + locked)
+# Load data (robust)
 # -------------------------
 @st.cache_data(ttl=3600)
 def load_lbr():
@@ -95,7 +100,7 @@ def load_lbr():
 
     tables = pd.read_html(r.text)
 
-    # pick the best candidate table
+    # choose best candidate table
     best = None
     best_score = -1
     for t in tables:
@@ -104,9 +109,12 @@ def load_lbr():
         cols = t.columns.tolist()
 
         score = 0
-        if find_col_any(cols, ["rank"]): score += 2
-        if find_col_any(cols, ["assets", "consol"]): score += 2
-        if find_col_any(cols, ["location"]): score += 1
+        if find_col_any(cols, ["rank"]):
+            score += 2
+        if find_col_any(cols, ["assets", "consol"]):
+            score += 2
+        if find_col_any(cols, ["location"]):
+            score += 1
 
         if score > best_score:
             best, best_score = t, score
@@ -121,7 +129,7 @@ def load_lbr():
     charter_col = find_col_any(cols, ["charter"])
     ibf_col = find_col_any(cols, ["ibf"])
 
-    # assets col can vary; detect broadly
+    # detect assets columns (Fed can change exact text)
     assets_col = find_col_any(cols, ["consol assets", "consolidated assets", "consol", "assets"])
     dom_assets_col = find_col_any(cols, ["domestic assets"])
 
@@ -130,18 +138,18 @@ def load_lbr():
     if loc_col: rename[loc_col] = "Location"
     if charter_col: rename[charter_col] = "Charter"
     if ibf_col: rename[ibf_col] = "IBF"
-    if assets_col: rename[assets_col] = "Assets"
-    if dom_assets_col: rename[dom_assets_col] = "Domestic Assets"
+    if assets_col: rename[assets_col] = "Assets_Mil"
+    if dom_assets_col: rename[dom_assets_col] = "DomesticAssets_Mil"
 
     df = df.rename(columns=rename)
 
-    if "Assets" not in df.columns:
-        raise KeyError(f"Could not detect Assets column. Columns found: {list(df.columns)}")
+    if "Assets_Mil" not in df.columns:
+        raise KeyError(f"Could not detect consolidated assets column. Columns found: {list(df.columns)}")
 
-    # Safe numeric conversion (NO CRASH)
-    df["Assets"] = to_number_safe(df["Assets"])
-    if "Domestic Assets" in df.columns:
-        df["Domestic Assets"] = to_number_safe(df["Domestic Assets"])
+    # safe numeric conversion
+    df["Assets_Mil"] = to_number_safe(df["Assets_Mil"])
+    if "DomesticAssets_Mil" in df.columns:
+        df["DomesticAssets_Mil"] = to_number_safe(df["DomesticAssets_Mil"])
 
     if "Rank" in df.columns:
         df["Rank"] = pd.to_numeric(df["Rank"], errors="coerce")
@@ -152,8 +160,11 @@ def load_lbr():
     df["Logo"] = df["Bank"].apply(get_logo)
     df["Short"] = df["Bank"].apply(short_name)
 
-    # drop rows that don't have assets
-    df = df[df["Assets"].notna()].copy()
+    # drop rows with no assets
+    df = df[df["Assets_Mil"].notna()].copy()
+
+    # also create dollar column for charts (fixes your “millions of millions” problem)
+    df["Assets_$"] = df["Assets_Mil"].apply(mil_to_dollars)
 
     return df
 
@@ -168,7 +179,10 @@ except Exception as e:
 # UI
 # -------------------------
 st.title("Thomas Selassie – Fed LBR Large Commercial Banks Dashboard")
-st.caption("Source: Federal Reserve LBR current release. Assets formatted as M/B/T.")
+st.caption(
+    "Source: Federal Reserve LBR current release. "
+    "Fed reports assets in **millions**; this dashboard formats charts in real dollars ($B/$T)."
+)
 
 with st.sidebar:
     st.header("Filters")
@@ -183,11 +197,11 @@ if search:
 if state != "All" and "State" in filtered.columns:
     filtered = filtered[filtered["State"] == state]
 
-# sorting
+# sort
 if "Rank" in filtered.columns and filtered["Rank"].notna().any():
     filtered = filtered.sort_values("Rank")
 else:
-    filtered = filtered.sort_values("Assets", ascending=False)
+    filtered = filtered.sort_values("Assets_Mil", ascending=False)
 
 filtered = filtered.head(top_n)
 
@@ -204,8 +218,8 @@ for i, (_, r) in enumerate(strip.iterrows()):
 # metrics
 m1, m2, m3 = st.columns(3)
 m1.metric("Banks shown", int(len(filtered)))
-m2.metric("Total assets", format_assets(filtered["Assets"].sum()))
-m3.metric("Median assets", format_assets(filtered["Assets"].median()))
+m2.metric("Total assets", format_assets_mil(filtered["Assets_Mil"].sum()))
+m3.metric("Median assets", format_assets_mil(filtered["Assets_Mil"].median()))
 
 # layout
 left, right = st.columns([1.1, 1.4])
@@ -225,31 +239,50 @@ with left:
         st.write(f"**Charter:** {row.get('Charter','')}")
     if "IBF" in filtered.columns:
         st.write(f"**IBF:** {row.get('IBF','')}")
-    st.write(f"**Assets:** {format_assets(row['Assets'])}")
+    st.write(f"**Assets:** {format_assets_mil(row['Assets_Mil'])}")
 
     st.subheader("Table")
-    show_cols = [c for c in ["Rank", "Bank", "Location", "State", "Charter", "IBF", "Assets"] if c in filtered.columns]
-    st.dataframe(filtered[show_cols].reset_index(drop=True), use_container_width=True, height=420)
+    show_cols = [c for c in ["Rank", "Bank", "Location", "State", "Charter", "IBF", "Assets_Mil"] if c in filtered.columns]
+    table_df = filtered[show_cols].reset_index(drop=True).copy()
+    if "Assets_Mil" in table_df.columns:
+        table_df = table_df.rename(columns={"Assets_Mil": "Assets (Mil $)"})
+    st.dataframe(table_df, use_container_width=True, height=420)
 
 with right:
     st.subheader("Charts")
 
+    # BAR: use Assets_$ so x-axis shows $B/$T correctly
+    bar_df = filtered.copy().sort_values("Assets_$")
+
     fig_bar = px.bar(
-        filtered.sort_values("Assets"),
-        x="Assets",
+        bar_df,
+        x="Assets_$",
         y="Bank",
         orientation="h",
-        labels={"Assets": "Assets (Millions USD)", "Bank": ""},
         title="Top banks by consolidated assets",
+        labels={"Assets_$": "Consolidated Assets (USD)", "Bank": ""},
+        text="Assets_$"
     )
-    fig_bar.update_traces(marker_color="#1F6AE1")
+
+    fig_bar.update_traces(
+        marker_color="#1F6AE1",
+        texttemplate="%{text:$,.2s}",
+        hovertemplate="<b>%{y}</b><br>Assets: %{x:$,.0f}<extra></extra>"
+    )
+    fig_bar.update_layout(
+        xaxis_tickprefix="$",
+        xaxis_tickformat="~s"
+    )
     st.plotly_chart(fig_bar, use_container_width=True)
 
+    # HIST: also use Assets_$ (real dollars)
     fig_hist = px.histogram(
         filtered,
-        x="Assets",
+        x="Assets_$",
         nbins=12,
         title="Distribution of assets (bank size spread)",
-        labels={"Assets": "Assets (Millions USD)"},
+        labels={"Assets_$": "Assets (USD)"},
     )
+    fig_hist.update_traces(marker_color="#0B2C5D")
+    fig_hist.update_layout(xaxis_tickprefix="$", xaxis_tickformat="~s")
     st.plotly_chart(fig_hist, use_container_width=True)
