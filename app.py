@@ -4,359 +4,205 @@ import streamlit as st
 import plotly.express as px
 import requests
 
+# ===============================
+# SETTINGS
+# ===============================
 LBR_URL = "https://www.federalreserve.gov/releases/lbr/current/"
 
-# -------------------------------
-# BANK LOGOS (domain map)
-# Uses Clearbit logo endpoint: https://logo.clearbit.com/<domain>
-# Matching is substring-based to handle long Fed bank names like:
-# "JPMORGAN CHASE BK NA/JPMORGAN CHASE & CO"
-# -------------------------------
-BANK_DOMAIN_MAP = {
-    "JPMORGAN": "chase.com",
-    "CHASE": "chase.com",
-    "BANK OF AMERICA": "bankofamerica.com",
-    "WELLS FARGO": "wellsfargo.com",
-    "CITIBANK": "citi.com",
-    "CITIGROUP": "citi.com",
-    "CAPITAL ONE": "capitalone.com",
-    "GOLDMAN SACHS": "goldmansachs.com",
-    "MORGAN STANLEY": "morganstanley.com",
-    "PNC": "pnc.com",
-    "TRUIST": "truist.com",
-    "U S BK": "usbank.com",
-    "U.S. BK": "usbank.com",
-    "US BK": "usbank.com",
-    "US BANK": "usbank.com",
-    "BANK OF NY MELLON": "bnymellon.com",
-    "NEW YORK MELLON": "bnymellon.com",
-    "BNY MELLON": "bnymellon.com",
-    "STATE STREET": "statestreet.com",
-    "TD BK": "td.com",
-    "TD BANK": "td.com",
-    "FIFTH THIRD": "53.com",
-    "KEYBANK": "key.com",
-    "HUNTINGTON": "huntington.com",
-    "REGIONS": "regions.com",
-    "ALLY": "ally.com",
-    "CITIZENS": "citizensbank.com",
-    "M&T": "mtb.com",
-    "SANTANDER": "santanderbank.com",
-    "BMO": "bmo.com",
-}
-
-def bank_logo_url(bank_name: str) -> str | None:
-    n = (bank_name or "").upper()
-    n = re.sub(r"\s+", " ", n).strip()
-    for key, domain in BANK_DOMAIN_MAP.items():
-        if key in n:
-            return f"https://logo.clearbit.com/{domain}"
-    return None
-
-def short_bank_label(bank_name: str) -> str:
-    # Keep it readable for captions
-    if not bank_name:
-        return ""
-    s = str(bank_name).split("/")[0].strip()
-    s = re.sub(r"\s+", " ", s)
-    return s[:22] + ("…" if len(s) > 22 else "")
-
-
-# -------------------------------
-# PAGE CONFIG + STYLE
-# -------------------------------
-st.set_page_config(page_title="Thomas Selassie – Fed LBR Banks Dashboard", layout="wide")
-
-st.title("Thomas Selassie – Fed LBR Large Commercial Banks Dashboard")
-st.caption(
-    "Source: Federal Reserve 'Large Commercial Banks (LBR) – current release'. "
-    "This app parses the ranked bank table and updates whenever the Fed updates the page."
+st.set_page_config(
+    page_title="Thomas Selassie – Fed LBR Banks Dashboard",
+    layout="wide"
 )
 
-# Light UI polish (safe HTML)
+# ===============================
+# COLOR THEME (Finance style)
+# ===============================
+PRIMARY_COLOR = "#0B2C5D"   # Navy
+ACCENT_COLOR = "#1F6AE1"    # Blue
+SOFT_GRAY = "#F4F6F9"
+
 st.markdown(
-    """
+    f"""
     <style>
-      .block-container { padding-top: 1.2rem; }
-      h1 { letter-spacing: -0.5px; }
-      .stMetric { border-radius: 14px; }
+    .block-container {{
+        padding-top: 1.2rem;
+    }}
+    h1 {{
+        color: {PRIMARY_COLOR};
+        letter-spacing: -0.6px;
+    }}
+    h2, h3 {{
+        color: {PRIMARY_COLOR};
+    }}
+    .stMetric {{
+        background-color: {SOFT_GRAY};
+        padding: 12px;
+        border-radius: 12px;
+    }}
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# -------------------------------
-# DATA LOADERS
-# -------------------------------
-@st.cache_data(ttl=60 * 60)
-def fetch_html(url: str) -> str:
-    # Streamlit Cloud sometimes blocks direct pandas.read_html(url)
-    # so we fetch HTML with a browser-like user agent first.
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
-    r = requests.get(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.text
+# ===============================
+# TITLE
+# ===============================
+st.title("Thomas Selassie – Fed LBR Large Commercial Banks Dashboard")
+st.caption(
+    "Source: Federal Reserve Large Commercial Banks (LBR) – current release. "
+    "Dashboard auto-updates when the Fed updates the table."
+)
 
-@st.cache_data(ttl=60 * 60)
-def load_lbr_df(url: str) -> pd.DataFrame:
-    html = fetch_html(url)
-    tables = pd.read_html(html)
+# ===============================
+# FIXED BANK LOGOS (TOP LBR)
+# ===============================
+BANK_LOGO_MAP = {
+    "JPMORGAN CHASE": "https://upload.wikimedia.org/wikipedia/commons/0/0e/JPMorgan_Chase_logo.svg",
+    "BANK OF AMER": "https://upload.wikimedia.org/wikipedia/commons/2/20/Bank_of_America_logo.svg",
+    "CITIBANK": "https://upload.wikimedia.org/wikipedia/commons/5/5a/Citibank.svg",
+    "WELLS FARGO": "https://upload.wikimedia.org/wikipedia/commons/b/b3/Wells_Fargo_Bank.svg",
+    "U S BK": "https://upload.wikimedia.org/wikipedia/commons/0/01/U.S._Bank_logo.svg",
+    "US BK": "https://upload.wikimedia.org/wikipedia/commons/0/01/U.S._Bank_logo.svg",
+    "CAPITAL ONE": "https://upload.wikimedia.org/wikipedia/commons/9/98/Capital_One_logo.svg",
+    "GOLDMAN SACHS": "https://upload.wikimedia.org/wikipedia/commons/6/61/Goldman_Sachs.svg",
+    "PNC": "https://upload.wikimedia.org/wikipedia/commons/5/5a/PNC_Financial_Services_logo.svg",
+    "TRUIST": "https://upload.wikimedia.org/wikipedia/commons/5/51/Truist_logo.svg",
+    "BANK OF NY MELLON": "https://upload.wikimedia.org/wikipedia/commons/0/09/BNY_Mellon_logo.svg",
+    "STATE STREET": "https://upload.wikimedia.org/wikipedia/commons/6/6f/State_Street_Corporation_logo.svg",
+    "TD BK": "https://upload.wikimedia.org/wikipedia/commons/6/6f/TD_Bank_logo.svg",
+    "TD BANK": "https://upload.wikimedia.org/wikipedia/commons/6/6f/TD_Bank_logo.svg",
+    "MORGAN STANLEY": "https://upload.wikimedia.org/wikipedia/commons/3/3e/Morgan_Stanley_Logo_1.svg",
+    "BMO": "https://upload.wikimedia.org/wikipedia/commons/5/5a/BMO_logo.svg",
+    "FIRST-CITIZENS": "https://upload.wikimedia.org/wikipedia/commons/2/25/First_Citizens_BancShares_logo.svg",
+    "CITIZENS BK": "https://upload.wikimedia.org/wikipedia/commons/8/8b/Citizens_Financial_Group_logo.svg",
+    "FIFTH THIRD": "https://upload.wikimedia.org/wikipedia/commons/3/3b/Fifth_Third_Bank_logo.svg",
+    "AMERICAN EXPRESS": "https://upload.wikimedia.org/wikipedia/commons/3/30/American_Express_logo.svg",
+}
 
-    # Pick the most likely ranked bank table
-    target = None
-    for t in tables:
-        cols = [str(c).lower() for c in t.columns]
-        if any("rank" in c for c in cols) and any(("consol" in c) or ("assets" in c) for c in cols):
-            target = t
-            break
-
-    if target is None:
-        target = max(tables, key=lambda x: x.shape[0] * x.shape[1])
-
-    df = target.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-
-    def find_col(patterns):
-        for c in df.columns:
-            cl = str(c).lower()
-            if any(p in cl for p in patterns):
-                return c
+def bank_logo_url(bank_name):
+    if not bank_name:
         return None
+    name = bank_name.upper()
+    for key, url in BANK_LOGO_MAP.items():
+        if key in name:
+            return url
+    return None
 
-    col_bank = df.columns[0]
-    col_rank = find_col(["rank"])
-    col_loc  = find_col(["location"])
-    col_char = find_col(["charter"])
-    col_assets = find_col(["consol assets", "consolidated assets", "consol"])
-    col_dom_assets = find_col(["domestic assets"])
-    col_ibf = None
-    for c in df.columns:
-        if str(c).strip().upper() == "IBF":
-            col_ibf = c
-            break
+def short_name(bank_name):
+    return bank_name.split("/")[0][:28]
 
-    # Clean numeric columns
-    for c in [col_assets, col_dom_assets]:
-        if c and c in df.columns:
-            df[c] = (
-                df[c].astype(str)
-                .str.replace(",", "", regex=False)
-                .str.replace(r"[^\d\.]", "", regex=True)
-            )
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+# ===============================
+# LOAD FED DATA (SAFE)
+# ===============================
+@st.cache_data(ttl=3600)
+def load_data():
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+    r = requests.get(LBR_URL, headers=headers, timeout=30)
+    r.raise_for_status()
+    tables = pd.read_html(r.text)
 
-    # Derive State from location like "CITY, ST"
-    if col_loc and col_loc in df.columns:
-        df["State"] = df[col_loc].astype(str).str.extract(r",\s*([A-Z]{2})\s*$", expand=False)
-    else:
-        df["State"] = None
+    df = tables[0].copy()
+    df.columns = [c.strip() for c in df.columns]
 
-    rename_map = {}
-    if col_bank: rename_map[col_bank] = "Bank / Holding Company"
-    if col_rank: rename_map[col_rank] = "National Rank"
-    if col_loc:  rename_map[col_loc]  = "Location"
-    if col_char: rename_map[col_char] = "Charter"
-    if col_assets: rename_map[col_assets] = "Consolidated Assets (Mil $)"
-    if col_dom_assets: rename_map[col_dom_assets] = "Domestic Assets (Mil $)"
-    if col_ibf: rename_map[col_ibf] = "IBF"
+    df.rename(columns={
+        df.columns[0]: "Bank",
+        "Nat'l Rank": "Rank",
+        "Consol Assets (Mil $)": "Assets"
+    }, inplace=True)
 
-    df = df.rename(columns=rename_map)
+    df["Assets"] = (
+        df["Assets"].astype(str)
+        .str.replace(",", "", regex=False)
+        .astype(float)
+    )
 
-    if "National Rank" in df.columns:
-        df["National Rank"] = pd.to_numeric(df["National Rank"], errors="coerce")
-
-    # Logo column
-    if "Bank / Holding Company" in df.columns:
-        df["Logo"] = df["Bank / Holding Company"].astype(str).apply(bank_logo_url)
-        df["Short Name"] = df["Bank / Holding Company"].astype(str).apply(short_bank_label)
-    else:
-        df["Logo"] = None
-        df["Short Name"] = ""
+    df["Logo"] = df["Bank"].apply(bank_logo_url)
+    df["Short"] = df["Bank"].apply(short_name)
 
     return df
 
+df = load_data()
 
-# Load data with friendly failure message
-try:
-    df = load_lbr_df(LBR_URL)
-except Exception as e:
-    st.error("Could not load the Federal Reserve LBR page right now.")
-    st.info("If this persists, the Fed site may be temporarily blocking requests from Streamlit Cloud.")
-    st.exception(e)
-    st.stop()
-
-
-# -------------------------------
-# SIDEBAR FILTERS
-# -------------------------------
+# ===============================
+# SIDEBAR
+# ===============================
 with st.sidebar:
     st.header("Filters")
 
-    search = st.text_input("Search bank / holding company", "")
+    search = st.text_input("Search bank")
+    top_n = st.slider("Top N banks", 5, 50, 15)
 
-    states = sorted([s for s in df["State"].dropna().unique().tolist() if isinstance(s, str)])
-    state = st.selectbox("State (optional)", ["All"] + states)
-
-    charter_vals = []
-    if "Charter" in df.columns:
-        charter_vals = sorted(df["Charter"].dropna().astype(str).unique().tolist())
-    charter = st.selectbox("Charter (optional)", ["All"] + charter_vals) if charter_vals else "All"
-
-    ibf = st.selectbox("IBF (optional)", ["All", "Y", "N"]) if "IBF" in df.columns else "All"
-
-    top_n = st.slider("Top N banks", 10, min(200, len(df)), 50)
-
-    assets_col = "Consolidated Assets (Mil $)" if "Consolidated Assets (Mil $)" in df.columns else None
-    assets_range = None
-    if assets_col and df[assets_col].notna().any():
-        a_min = float(df[assets_col].min())
-        a_max = float(df[assets_col].max())
-        assets_range = st.slider(
-            "Consolidated Assets range (Mil $)",
-            min_value=float(max(0, a_min)),
-            max_value=float(a_max),
-            value=(float(max(0, a_min)), float(a_max)),
-        )
-
-
-# -------------------------------
-# APPLY FILTERS
-# -------------------------------
+# ===============================
+# FILTER
+# ===============================
 filtered = df.copy()
+if search:
+    filtered = filtered[filtered["Bank"].str.contains(search, case=False)]
 
-if search.strip():
-    filtered = filtered[filtered["Bank / Holding Company"].astype(str).str.contains(search, case=False, na=False)]
+filtered = filtered.sort_values("Rank").head(top_n)
 
-if state != "All":
-    filtered = filtered[filtered["State"] == state]
+# ===============================
+# LOGO ROW
+# ===============================
+st.subheader("Top Banks")
+logo_cols = st.columns(len(filtered))
 
-if charter != "All" and "Charter" in filtered.columns:
-    filtered = filtered[filtered["Charter"].astype(str) == charter]
-
-if ibf != "All" and "IBF" in filtered.columns:
-    filtered = filtered[filtered["IBF"].astype(str).str.upper() == ibf]
-
-if assets_range and "Consolidated Assets (Mil $)" in filtered.columns:
-    lo, hi = assets_range
-    filtered = filtered[
-        (filtered["Consolidated Assets (Mil $)"] >= lo) &
-        (filtered["Consolidated Assets (Mil $)"] <= hi)
-    ]
-
-# Limit to top N
-if "National Rank" in filtered.columns and filtered["National Rank"].notna().any():
-    filtered = filtered.sort_values("National Rank").head(top_n)
-elif "Consolidated Assets (Mil $)" in filtered.columns:
-    filtered = filtered.sort_values("Consolidated Assets (Mil $)", ascending=False).head(top_n)
-else:
-    filtered = filtered.head(top_n)
-
-
-# -------------------------------
-# TOP LOGOS ROW (looks very polished)
-# -------------------------------
-st.subheader("Top Banks (Logos)")
-top_logo_df = (
-    filtered.sort_values("Consolidated Assets (Mil $)", ascending=False)
-    if "Consolidated Assets (Mil $)" in filtered.columns else filtered
-).head(8)
-
-logo_cols = st.columns(8)
-for i, (_, r) in enumerate(top_logo_df.iterrows()):
+for i, (_, r) in enumerate(filtered.iterrows()):
     with logo_cols[i]:
-        url = r.get("Logo")
-        name = r.get("Short Name", "")
-        if isinstance(url, str) and url:
-            st.image(url, width=56)
-        st.caption(name)
+        if r["Logo"]:
+            st.image(r["Logo"], width=55)
+        st.caption(r["Short"])
 
+# ===============================
+# METRICS
+# ===============================
+c1, c2, c3 = st.columns(3)
 
-# -------------------------------
+c1.metric("Banks shown", len(filtered))
+c2.metric("Total Assets (Mil $)", f"{filtered['Assets'].sum():,.0f}")
+c3.metric("Median Assets (Mil $)", f"{filtered['Assets'].median():,.0f}")
+
+# ===============================
 # MAIN LAYOUT
-# -------------------------------
-col1, col2 = st.columns([1.15, 1.25], gap="large")
+# ===============================
+left, right = st.columns([1.1, 1.3])
 
-with col1:
-    st.subheader("Summary")
-    st.metric("Banks shown", int(len(filtered)))
+with left:
+    st.subheader("Selected Bank")
+    row = filtered.iloc[0]
 
-    if "Consolidated Assets (Mil $)" in filtered.columns and filtered["Consolidated Assets (Mil $)"].notna().any():
-        st.metric("Total consolidated assets (Mil $)", f"{filtered['Consolidated Assets (Mil $)'].sum():,.0f}")
-        st.metric("Median assets (Mil $)", f"{filtered['Consolidated Assets (Mil $)'].median():,.0f}")
+    if row["Logo"]:
+        st.image(row["Logo"], width=90)
 
-    st.subheader("Selected bank")
-    if len(filtered) > 0:
-        row = filtered.iloc[0]
-        bank_name = str(row.get("Bank / Holding Company", ""))
-        logo = row.get("Logo", None)
-
-        cA, cB = st.columns([0.18, 0.82])
-        with cA:
-            if isinstance(logo, str) and logo:
-                st.image(logo, width=90)
-            else:
-                st.write("")
-        with cB:
-            st.markdown(f"### {bank_name}")
-            st.write(f"**Location:** {row.get('Location', '')}")
-            if "Charter" in filtered.columns:
-                st.write(f"**Charter:** {row.get('Charter', '')}")
-            if "IBF" in filtered.columns:
-                st.write(f"**IBF:** {row.get('IBF', '')}")
-            if "Consolidated Assets (Mil $)" in filtered.columns:
-                val = row.get("Consolidated Assets (Mil $)", None)
-                if pd.notna(val):
-                    st.write(f"**Consolidated Assets (Mil $):** {val:,.0f}")
+    st.markdown(f"### {row['Bank']}")
+    st.write(f"**Rank:** {int(row['Rank'])}")
+    st.write(f"**Assets (Mil $):** {row['Assets']:,.0f}")
 
     st.subheader("Table")
-    show_cols = [c for c in [
-        "National Rank",
-        "Bank / Holding Company",
-        "Location",
-        "State",
-        "Charter",
-        "IBF",
-        "Consolidated Assets (Mil $)",
-        "Domestic Assets (Mil $)",
-    ] if c in filtered.columns]
-
     st.dataframe(
-        filtered[show_cols].reset_index(drop=True),
+        filtered[["Rank", "Bank", "Assets"]],
         use_container_width=True,
-        height=540
+        height=420
     )
 
-with col2:
-    st.subheader("Charts")
+with right:
+    st.subheader("Top Banks by Assets")
 
-    if "Consolidated Assets (Mil $)" in filtered.columns and filtered["Consolidated Assets (Mil $)"].notna().any():
-        top_bar = filtered.sort_values("Consolidated Assets (Mil $)", ascending=False).head(15)
+    fig = px.bar(
+        filtered.sort_values("Assets"),
+        x="Assets",
+        y="Bank",
+        orientation="h",
+        color_discrete_sequence=[ACCENT_COLOR],
+        labels={"Assets": "Consolidated Assets (Mil $)", "Bank": ""}
+    )
 
-        fig1 = px.bar(
-            top_bar,
-            x="Consolidated Assets (Mil $)",
-            y="Bank / Holding Company",
-            orientation="h",
-            title="Top 15 by Consolidated Assets",
-        )
-        fig1.update_layout(height=420, yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig1, use_container_width=True)
+    fig.update_layout(
+        height=520,
+        plot_bgcolor="white",
+        paper_bgcolor="white"
+    )
 
-        fig2 = px.histogram(
-            filtered,
-            x="Consolidated Assets (Mil $)",
-            nbins=30,
-            title="Distribution of Consolidated Assets (Mil $)",
-        )
-        fig2.update_layout(height=320)
-        st.plotly_chart(fig2, use_container_width=True)
-
-        st.caption("Logos appear when a known bank domain matches the bank name (via Clearbit logo endpoint).")
-    else:
-        st.info("Assets column not detected on this release page format.")
+    st.plotly_chart(fig, use_container_width=True)
