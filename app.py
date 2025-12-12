@@ -6,11 +6,10 @@ import plotly.express as px
 import requests
 
 st.set_page_config(page_title="Thomas Selassie – Fed LBR Banks", layout="wide")
-
 LBR_URL = "https://www.federalreserve.gov/releases/lbr/current/"
 
 # -------------------------
-# Formatting
+# Formatting helpers
 # -------------------------
 def format_assets(mil):
     if pd.isna(mil):
@@ -22,19 +21,12 @@ def format_assets(mil):
     return f"${mil:,.0f}M"
 
 def clean_columns(cols):
-    out = []
+    cleaned = []
     for c in cols:
         if isinstance(c, tuple):
             c = " ".join([str(x) for x in c if x and str(x) != "nan"])
-        out.append(str(c).strip())
-    return out
-
-def find_col(cols, patterns):
-    cols_l = [str(c).lower() for c in cols]
-    for i, c in enumerate(cols_l):
-        if all(p in c for p in patterns):
-            return cols[i]
-    return None
+        cleaned.append(str(c).strip())
+    return cleaned
 
 def find_col_any(cols, any_patterns):
     cols_l = [str(c).lower() for c in cols]
@@ -43,14 +35,17 @@ def find_col_any(cols, any_patterns):
             return cols[i]
     return None
 
-def to_number(series):
-    return (
-        series.astype(str)
-        .str.replace(",", "", regex=False)
-        .str.replace(r"[^\d\.]", "", regex=True)
-        .replace("", pd.NA)
-        .astype(float)
-    )
+def to_number_safe(series: pd.Series) -> pd.Series:
+    """
+    Converts messy numeric strings like '3,813,431', '—', '', '$1,200' to floats.
+    Blanks become NaN (no crash).
+    """
+    s = series.astype(str).str.strip()
+    s = s.replace({"": pd.NA, "—": pd.NA, "-": pd.NA, "nan": pd.NA, "None": pd.NA})
+    s = s.str.replace(",", "", regex=False)
+    s = s.str.replace(r"[^\d\.]", "", regex=True)  # keep digits and dot only
+    s = s.replace({"": pd.NA})
+    return pd.to_numeric(s, errors="coerce")
 
 # -------------------------
 # Logos
@@ -90,7 +85,7 @@ def short_name(bank):
     return re.sub(r"\s+", " ", str(bank).split("/")[0].strip())[:22]
 
 # -------------------------
-# Load data (robust)
+# Load data (robust + locked)
 # -------------------------
 @st.cache_data(ttl=3600)
 def load_lbr():
@@ -99,10 +94,10 @@ def load_lbr():
     r.raise_for_status()
 
     tables = pd.read_html(r.text)
-    # pick the table that looks like the ranked bank table
+
+    # pick the best candidate table
     best = None
     best_score = -1
-
     for t in tables:
         t = t.copy()
         t.columns = clean_columns(t.columns)
@@ -110,7 +105,7 @@ def load_lbr():
 
         score = 0
         if find_col_any(cols, ["rank"]): score += 2
-        if find_col_any(cols, ["consol", "assets", "asset"]): score += 2
+        if find_col_any(cols, ["assets", "consol"]): score += 2
         if find_col_any(cols, ["location"]): score += 1
 
         if score > best_score:
@@ -118,20 +113,18 @@ def load_lbr():
 
     df = best.copy()
     df.columns = clean_columns(df.columns)
-
     cols = df.columns.tolist()
 
-    bank_col = cols[0]  # first column is usually bank/holding co name
+    bank_col = cols[0]
     rank_col = find_col_any(cols, ["rank"])
-    loc_col  = find_col_any(cols, ["bank location", "location"])
+    loc_col = find_col_any(cols, ["bank location", "location"])
     charter_col = find_col_any(cols, ["charter"])
     ibf_col = find_col_any(cols, ["ibf"])
 
-    # Assets columns (these change sometimes, so detect)
+    # assets col can vary; detect broadly
     assets_col = find_col_any(cols, ["consol assets", "consolidated assets", "consol", "assets"])
     dom_assets_col = find_col_any(cols, ["domestic assets"])
 
-    # Rename safely
     rename = {bank_col: "Bank"}
     if rank_col: rename[rank_col] = "Rank"
     if loc_col: rename[loc_col] = "Location"
@@ -142,27 +135,32 @@ def load_lbr():
 
     df = df.rename(columns=rename)
 
-    # If we STILL didn't get Assets, fail with a useful message
     if "Assets" not in df.columns:
-        raise KeyError(f"Could not find an Assets column. Columns found: {list(df.columns)}")
+        raise KeyError(f"Could not detect Assets column. Columns found: {list(df.columns)}")
 
-    # Clean numeric
-    df["Assets"] = to_number(df["Assets"])
+    # Safe numeric conversion (NO CRASH)
+    df["Assets"] = to_number_safe(df["Assets"])
+    if "Domestic Assets" in df.columns:
+        df["Domestic Assets"] = to_number_safe(df["Domestic Assets"])
+
     if "Rank" in df.columns:
         df["Rank"] = pd.to_numeric(df["Rank"], errors="coerce")
+
     if "Location" in df.columns:
         df["State"] = df["Location"].astype(str).str.extract(r",\s*([A-Z]{2})\s*$", expand=False)
 
     df["Logo"] = df["Bank"].apply(get_logo)
     df["Short"] = df["Bank"].apply(short_name)
 
+    # drop rows that don't have assets
+    df = df[df["Assets"].notna()].copy()
+
     return df
 
 try:
     df = load_lbr()
 except Exception as e:
-    st.error("Fed LBR table format changed or the page is temporarily returning a different layout.")
-    st.write("Open your Streamlit logs and copy the line that starts with: **Columns found:**")
+    st.error("Fed LBR page returned an unexpected format. Open Streamlit logs for details.")
     st.exception(e)
     st.stop()
 
@@ -170,7 +168,7 @@ except Exception as e:
 # UI
 # -------------------------
 st.title("Thomas Selassie – Fed LBR Large Commercial Banks Dashboard")
-st.caption("Source: Federal Reserve LBR current release. Assets are formatted in M/B/T for readability.")
+st.caption("Source: Federal Reserve LBR current release. Assets formatted as M/B/T.")
 
 with st.sidebar:
     st.header("Filters")
@@ -185,7 +183,7 @@ if search:
 if state != "All" and "State" in filtered.columns:
     filtered = filtered[filtered["State"] == state]
 
-# sort by Rank if available; else by Assets
+# sorting
 if "Rank" in filtered.columns and filtered["Rank"].notna().any():
     filtered = filtered.sort_values("Rank")
 else:
@@ -193,7 +191,7 @@ else:
 
 filtered = filtered.head(top_n)
 
-# Top logos strip
+# logo strip
 st.subheader("Top Banks")
 strip = filtered.head(min(10, len(filtered)))
 cols = st.columns(len(strip))
@@ -203,13 +201,13 @@ for i, (_, r) in enumerate(strip.iterrows()):
             st.image(r["Logo"], width=70)
         st.caption(r["Short"])
 
-# Metrics
+# metrics
 m1, m2, m3 = st.columns(3)
 m1.metric("Banks shown", int(len(filtered)))
 m2.metric("Total assets", format_assets(filtered["Assets"].sum()))
 m3.metric("Median assets", format_assets(filtered["Assets"].median()))
 
-# Main content
+# layout
 left, right = st.columns([1.1, 1.4])
 
 with left:
@@ -217,6 +215,7 @@ with left:
     row = filtered.iloc[0]
     if row["Logo"]:
         st.image(row["Logo"], width=120)
+
     st.markdown(f"### {row['Bank']}")
     if "Rank" in filtered.columns and pd.notna(row.get("Rank")):
         st.write(f"**Rank:** {int(row['Rank'])}")
